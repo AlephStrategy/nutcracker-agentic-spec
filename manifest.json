@@ -1,0 +1,70 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Nutcracker Bot",
+  "name_for_model": "nutcracker_bot",
+  "description_for_human": "Cross-asset, quote-agnostic deterministic rebalancing engine. Non-custodial, spot-only. Human and AI agent onboarding supported.",
+  "description_for_model": "Nutcracker Bot is a non-custodial, spot-only deterministic rebalancing engine operating as a Deterministic Execution Environment (DEE). Agents may assist account owners with onboarding, documentation review, and signup initiation. Agents operating under explicit delegation from an account owner may access tenant-scoped bot control endpoints using a provisioned access key. Full agentic interface specification available at /ai/agent-schema.json and in the linked specification document. Agents must not attempt to access engine control endpoints without a valid tenant-scoped access key provisioned by the account owner.",
+  "contact_email": "integration@nutcrackerbot.com",
+  "legal_info_url": "https://nutcrackerbot.com/legal.html",
+  "documentation": {
+    "whitepaper": "https://nutcrackerbot.com/Whitepaper.pdf",
+    "agentic_specification": "https://nutcrackerbot.com/nutcracker-agentic-spec-v01.pdf",
+    "agent_schema": "https://nutcrackerbot.com/ai/agent-schema.json",
+    "sandbox_results": "https://nutcrackerbot.com/nutcracker-sandbox-results-apr2026.pdf"
+  },
+  "allowed_endpoints": {
+    "GET": [
+      "/",
+      "/index.html",
+      "/legal.html",
+      "/pnl",
+      "/Whitepaper.pdf",
+      "/Nutcracker-Bot.pdf",
+      "/Nutcracker-Bot-The-Story-The-Strategy-The-Substance.pdf",
+      "/nutcracker-sandbox-results-apr2026.pdf",
+      "/nutcracker-agentic-spec-v01.pdf",
+      "/ai/manifest.json",
+      "/ai/agent-schema.json"
+    ],
+    "POST": [
+      "/signup"
+    ]
+  },
+  "delegated_agent_endpoints": {
+    "description": "The following endpoints are accessible to agents operating under explicit delegation from an account owner via provisioned tenant-scoped access key. See agentic_specification for full details.",
+    "requires": "tenant_scoped_access_key",
+    "lifecycle": ["POST /start", "POST /stop", "POST /restart", "POST /initialize_bot"],
+    "status": ["GET /status", "GET /exchange_status", "GET /logs", "GET /pnl_status", "GET /pnl_last_update"],
+    "config_read": ["GET /config"],
+    "pnl_analytics": ["POST /run_pnl", "POST /stop_pnl", "GET /pnl_snapshot"],
+    "human_gated": {
+      "description": "These endpoints modify operational parameters. Agents should treat as proposal-only pending account owner approval.",
+      "endpoints": ["POST /update_pnl", "POST /update_symbol", "POST /update_all_symbols", "POST /update_bot_settings"]
+    },
+    "vault_operations": {
+      "description": "Exchange key provisioning. Agent may execute only when explicitly provisioned to do so by account owner.",
+      "endpoints": ["POST /update_exchange_keys"]
+    }
+  },
+  "forbidden_endpoints": [
+    "/api/internal/",
+    "/engine/",
+    "/admin/",
+    "/pnl_internal"
+  ],
+  "safety_constraints": {
+    "no_withdrawal": true,
+    "spot_only": true,
+    "non_custodial": true,
+    "maker_only": true,
+    "max_symbols": 9
+  },
+  "capabilities": {
+    "signup": {
+      "description": "Agents may initiate a signup request on behalf of a user by POSTing to /signup with email, plan, and optional agent metadata."
+    },
+    "delegated_operation": {
+      "description": "Agents provisioned with a tenant-scoped access key by their principal may execute the full bot lifecycle. See agentic_specification."
+    }
+  }
+}

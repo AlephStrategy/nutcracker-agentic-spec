@@ -1,0 +1,565 @@
+{
+  "schema_id": "nutcracker-agent-schema",
+  "schema_version": "0.1-pilot",
+  "last_updated": "2026-05",
+  "status": "work-in-progress",
+  "maintainer": "Aleph Strategy R&D Lab",
+  "contact": "integration@nutcrackerbot.com",
+  "documentation": "https://nutcrackerbot.com/nutcracker-agentic-spec-v01.pdf",
+  "reference_papers": {
+    "dee_paper": "https://doi.org/10.5281/zenodo.19736833",
+    "jpcl_paper": "https://doi.org/10.5281/zenodo.19737681"
+  },
+  "base_url": "https://nutcrackerbot.com",
+  "tenant_base_url_pattern": "https://nutcrackerbot.com/api/{tenant_id}",
+  "alternative_base_url_pattern": "https://nutcrackerbot.com/{access_key}",
+
+  "authentication": {
+    "type": "access_key",
+    "header": "X-Access-Key",
+    "description": "Tenant-scoped access key generated at account creation. Provisioned to agent by account owner. Revocable by account owner at any time.",
+    "scoped_to": "tenant_instance",
+    "regeneration_endpoint": "POST /account/regenerate-key",
+    "status": "implemented"
+  },
+
+  "bot_state_machine": {
+    "description": "Valid bot states and transitions. Agents must query /status after every lifecycle call before proceeding.",
+    "states": [
+      "uninitialized",
+      "ready",
+      "running",
+      "stopped"
+    ],
+    "transitions": [
+      { "from": "uninitialized", "to": "ready", "via": "POST /initialize_bot" },
+      { "from": "ready", "to": "running", "via": "POST /start" },
+      { "from": "running", "to": "stopped", "via": "POST /stop" },
+      { "from": "stopped", "to": "running", "via": "POST /restart" },
+      { "from": "running", "to": "running", "via": "POST /restart" },
+      { "from": "any", "to": "uninitialized", "via": "exchange_error_or_hydration_failure" }
+    ],
+    "status": "implemented"
+  },
+
+  "onboarding_sequence": {
+    "description": "Required call sequence for autonomous agent onboarding. Out-of-sequence calls return errors.",
+    "steps": [
+      { "step": 1, "call": "POST /signup", "purpose": "Obtain access_key and tenant_id" },
+      { "step": 2, "call": "POST /update_exchange_keys", "purpose": "Provision exchange API credentials to vault" },
+      { "step": 3, "call": "GET /exchange_status", "purpose": "Verify keys_loaded: true" },
+      { "step": 4, "call": "POST /initialize_bot", "purpose": "Build bot instance and run warm-up" },
+      { "step": 5, "call": "GET /status", "purpose": "Confirm bot_state: ready" },
+      { "step": 6, "call": "POST /start", "purpose": "Begin execution" },
+      { "step": 7, "call": "GET /status", "purpose": "Confirm bot_state: running" }
+    ],
+    "status": "implemented"
+  },
+
+  "safety_constraints": {
+    "no_withdrawal": {
+      "value": true,
+      "enforcement": "api_key_permission_scope",
+      "validation_at_init": "roadmap_v1.1",
+      "description": "Engine will hard-reject API keys with withdrawal permissions at initialisation. Pilot: account owner responsible for correct key scoping."
+    },
+    "spot_only": {
+      "value": true,
+      "enforcement": "execution_layer",
+      "description": "Futures, margin, and derivatives execution outside engine scope."
+    },
+    "non_custodial": {
+      "value": true,
+      "description": "Engine holds no user funds at any point. All balances remain with exchange custody provider."
+    },
+    "maker_only": {
+      "value": true,
+      "description": "All orders placed as maker orders. Engine does not cross the spread as taker."
+    },
+    "max_symbols": {
+      "value": 9,
+      "enforcement": "hard_limit",
+      "description": "Maximum 9 active trading symbols. Inventory rails hard limit."
+    },
+    "zero_cache_policy": {
+      "value": true,
+      "description": "Every execution pulse fetches fresh data from exchange. No stale state used for order decisions."
+    },
+    "graceful_degradation": {
+      "value": true,
+      "description": "On exchange timeout, engine enters Data-Stall Cycle. Suspends trading until connectivity resumes."
+    },
+    "safe_state_on_shutdown": {
+      "value": true,
+      "description": "On backend shutdown, engine stops. Balances remain with exchange custody provider."
+    }
+  },
+
+  "endpoints": {
+
+    "account": {
+      "description": "Account creation and management. Parent directory layer — runs at platform level, not tenant level.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "signup",
+          "method": "POST",
+          "path": "/signup",
+          "description": "Creates tenant, triggers activation email, returns access_key.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "notes": "Agent may call on behalf of account owner during automated onboarding.",
+          "request_body": {
+            "email": "string",
+            "plan": "string",
+            "agent_metadata": "object | null"
+          },
+          "response": {
+            "access_key": "string",
+            "tenant_id": "string",
+            "status": "string"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "account_login",
+          "method": "POST",
+          "path": "/account/login",
+          "description": "Human login endpoint.",
+          "agent_usable": false,
+          "notes": "Agents do not use this endpoint. Authentication via access_key header only.",
+          "status": "implemented"
+        },
+        {
+          "id": "account_status",
+          "method": "GET",
+          "path": "/account/status",
+          "description": "Agent-friendly JSON status of tenant account.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "tenant_id": "string",
+            "plan": "string",
+            "active": "boolean",
+            "trial_expires": "string | null"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "regenerate_key",
+          "method": "POST",
+          "path": "/account/regenerate-key",
+          "description": "Regenerates access key. Restarts bot instance.",
+          "agent_usable": false,
+          "human_approval_required": true,
+          "notes": "Invalidates current access key. Human principal action only.",
+          "status": "implemented"
+        }
+      ]
+    },
+
+    "lifecycle": {
+      "description": "Bot instance lifecycle control. Tenant-scoped.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "initialize_bot",
+          "method": "POST",
+          "path": "/initialize_bot",
+          "description": "Builds bot instance from stored configuration and exchange keys. Runs warm-up data fetch.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "idempotent": true,
+          "notes": "If bot already initialised, returns current state without rebuilding. Must be called before /start.",
+          "response": {
+            "message": "string",
+            "bot_state": "string"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "start",
+          "method": "POST",
+          "path": "/start",
+          "description": "Begins execution. Runs full hydration before launching async task loop.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "delegation_note": "Delegated via access key provisioning by account owner.",
+          "requires_state": "ready",
+          "response": {
+            "message": "string",
+            "bot_state": "running"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "stop",
+          "method": "POST",
+          "path": "/stop",
+          "description": "Cancels all running tasks. Open orders remain on exchange — not cancelled by this call.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "delegation_note": "Delegated via access key provisioning by account owner.",
+          "requires_state": "running",
+          "response": {
+            "message": "string",
+            "bot_state": "stopped"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "restart",
+          "method": "POST",
+          "path": "/restart",
+          "description": "Stops tasks, rebuilds bot instance, runs hydration, restarts execution.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "delegation_note": "Delegated via access key provisioning by account owner.",
+          "requires_state": "any",
+          "response": {
+            "message": "string",
+            "bot_state": "running"
+          },
+          "status": "implemented"
+        }
+      ]
+    },
+
+    "status_and_diagnostics": {
+      "description": "Read-only monitoring and diagnostics. Safe for agent polling.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "status",
+          "method": "GET",
+          "path": "/status",
+          "description": "Primary state endpoint. Poll after every lifecycle call.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "bot_state": "uninitialized | ready | running | stopped",
+            "bot_attached": "boolean"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "exchange_status",
+          "method": "GET",
+          "path": "/exchange_status",
+          "description": "Confirms exchange credentials are loaded. Does not validate permissions in v0.1.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "keys_loaded": "boolean",
+            "exchange": "string | null"
+          },
+          "status": "implemented",
+          "roadmap_note": "Permission validation (no-withdrawal, spot-only check) added in v1.1"
+        },
+        {
+          "id": "logs",
+          "method": "GET",
+          "path": "/logs",
+          "description": "Returns recent execution engine log lines.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "parameters": {
+            "lines": { "type": "integer", "default": 100 }
+          },
+          "response": {
+            "logs": "string"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "pnl_status",
+          "method": "GET",
+          "path": "/pnl_status",
+          "description": "Returns current state of PnL calculation job.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "status": "idle | running | unknown"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "pnl_last_update",
+          "method": "GET",
+          "path": "/pnl_last_update",
+          "description": "Returns Unix timestamp of last completed PnL calculation.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "timestamp": "float | null"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "balances",
+          "method": "GET",
+          "path": "/balances",
+          "description": "Returns current account balances from exchange.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "balances": "object"
+          },
+          "status": "planned"
+        },
+        {
+          "id": "positions",
+          "method": "GET",
+          "path": "/positions",
+          "description": "Returns current open positions.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "positions": "array"
+          },
+          "status": "planned"
+        },
+        {
+          "id": "health",
+          "method": "GET",
+          "path": "/health",
+          "description": "Lightweight liveness check.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "status": "ok"
+          },
+          "status": "planned"
+        }
+      ]
+    },
+
+    "configuration_read": {
+      "description": "Read-only configuration access. No approval required.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "config",
+          "method": "GET",
+          "path": "/config",
+          "description": "Returns current active configuration.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "response": {
+            "symbols": "array",
+            "pnl_perc": "float",
+            "amounts_by_symbol": "object"
+          },
+          "status": "implemented"
+        }
+      ]
+    },
+
+    "configuration_proposals": {
+      "description": "Parameter modification endpoints. Agents treat as proposal-only. Human approval required before submission. API-level approval gate roadmap v1.2.",
+      "status": "implemented",
+      "human_gate_enforcement": "policy_v0.1_api_gate_roadmap_v1.2",
+      "endpoints": [
+        {
+          "id": "update_pnl",
+          "method": "POST",
+          "path": "/update_pnl",
+          "description": "Updates base PnL percentage threshold for trade execution.",
+          "agent_usable": "proposal_only",
+          "human_approval_required": true,
+          "approval_reason": "Risk parameter change",
+          "request_body": {
+            "pnl_perc": "float"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "update_symbol",
+          "method": "POST",
+          "path": "/update_symbol",
+          "description": "Replaces one trading pair with another and sets new inventory amount.",
+          "agent_usable": "proposal_only",
+          "human_approval_required": true,
+          "approval_reason": "Asset selection change",
+          "request_body": {
+            "old_symbol": "string",
+            "new_symbol": "string",
+            "new_amount": "float"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "update_all_symbols",
+          "method": "POST",
+          "path": "/update_all_symbols",
+          "description": "Replaces entire symbol set. Hard limit: maximum 9 symbols.",
+          "agent_usable": "proposal_only",
+          "human_approval_required": true,
+          "approval_reason": "Asset selection change",
+          "constraints": {
+            "max_symbols": 9
+          },
+          "request_body": {
+            "symbols": "array",
+            "amounts_by_symbol": "object"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "update_bot_settings",
+          "method": "POST",
+          "path": "/update_bot_settings",
+          "description": "Updates risk and execution parameters. All fields optional.",
+          "agent_usable": "proposal_only",
+          "human_approval_required": true,
+          "approval_reason": "Risk parameter change",
+          "request_body": {
+            "stop_buy": "object | null",
+            "stop_sell": "object | null",
+            "BBANDS_TIGHT_QUANTILE": "float | null",
+            "volatility": "float | null",
+            "timeframe": "string | null",
+            "num_bids_ask": "integer | null"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "reload_from_config",
+          "method": "POST",
+          "path": "/reload_from_config",
+          "description": "Restores bot to last saved owner-defined configuration.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "notes": "Reverts any in-session parameter changes to owner-defined state. Safe agent call.",
+          "status": "implemented"
+        }
+      ]
+    },
+
+    "exchange_connectivity": {
+      "description": "Exchange API key provisioning. Vault operations.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "update_exchange_keys",
+          "method": "POST",
+          "path": "/update_exchange_keys",
+          "description": "Provisions exchange API credentials to encrypted vault.",
+          "agent_usable": "conditional",
+          "human_approval_required": true,
+          "approval_reason": "Vault operation — exchange credential provisioning",
+          "agent_condition": "Agent may call only when explicitly provisioned to do so by account owner as part of automated onboarding flow.",
+          "critical_constraint": "Agent must not generate, store, or transmit exchange API keys beyond the scope of the provisioning instruction.",
+          "request_body": {
+            "exchange": "string",
+            "api_key": "string",
+            "api_secret": "string",
+            "api_password": "string | null"
+          },
+          "roadmap_note": "v1.1 will hard-reject keys with withdrawal permissions at this endpoint.",
+          "status": "implemented_validation_roadmap_v1.1"
+        },
+        {
+          "id": "connect_exchange",
+          "method": "POST",
+          "path": "/connect-exchange",
+          "description": "Connects bot instance to exchange.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "status": "planned"
+        },
+        {
+          "id": "disconnect_exchange",
+          "method": "POST",
+          "path": "/disconnect-exchange",
+          "description": "Disconnects bot instance from exchange.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "status": "planned"
+        }
+      ]
+    },
+
+    "pnl_analytics": {
+      "description": "PnL calculation and reporting. Safe for agent-initiated analysis.",
+      "status": "implemented",
+      "endpoints": [
+        {
+          "id": "run_pnl",
+          "method": "POST",
+          "path": "/run_pnl",
+          "description": "Initiates PnL calculation for specified lookback period. Non-blocking background job. One job at a time.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "request_body": {
+            "lookback_days": { "type": "integer", "default": 30 }
+          },
+          "response": {
+            "message": "string",
+            "running": "boolean"
+          },
+          "status": "implemented"
+        },
+        {
+          "id": "stop_pnl",
+          "method": "POST",
+          "path": "/stop_pnl",
+          "description": "Requests graceful stop of running PnL job.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "status": "implemented"
+        },
+        {
+          "id": "pnl_snapshot",
+          "method": "GET",
+          "path": "/pnl_snapshot",
+          "description": "Returns recent lines from latest PnL log file.",
+          "agent_usable": true,
+          "human_approval_required": false,
+          "parameters": {
+            "lines": { "type": "integer", "default": 200 }
+          },
+          "response": {
+            "log": "string"
+          },
+          "status": "implemented"
+        }
+      ]
+    }
+  },
+
+  "explicit_exclusions": {
+    "description": "Operations outside agent scope regardless of access key permissions.",
+    "exclusions": [
+      "Withdrawal instructions of any kind",
+      "Futures, margin, or derivatives order placement",
+      "Cross-tenant data access",
+      "Access key regeneration",
+      "Account deletion",
+      "Direct exchange API calls bypassing Nutcracker proxy"
+    ]
+  },
+
+  "roadmap": {
+    "v1.1": [
+      "API key permission validation at /update_exchange_keys and /initialize_bot",
+      "Hard rejection of keys with withdrawal permissions",
+      "Asset whitelisting per principal"
+    ],
+    "v1.2": [
+      "API-level human approval gate for configuration_proposals group",
+      "Proposal/confirm pattern for parameter changes"
+    ],
+    "commercial": [
+      "MCP tool wrapper",
+      "Headless JSON console parallel interface",
+      "GET /balances",
+      "GET /positions",
+      "GET /health"
+    ],
+    "future": [
+      "Sovereign AI principal model",
+      "Multi-exchange concurrent operation"
+    ]
+  }
+}

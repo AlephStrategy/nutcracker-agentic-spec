@@ -1,0 +1,6 @@
+nutcracker-agentic-spec/
+    agent-schema.json
+    manifest.json
+    CHANGELOG.md
+    VERSION
+    README.md
